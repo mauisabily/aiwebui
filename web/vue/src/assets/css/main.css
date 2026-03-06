@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --color-primary: #6366f1;
+    --color-secondary: #8B5CF6;
+    --color-success: #10B981;
+    --color-warning: #F59E0B;
+    --color-error: #EF4444;
+  }
+  
+  .dark {
+    --bg-primary: #111827;
+    --bg-secondary: #1F2937;
+    --text-primary: #F3F4F6;
+    --text-secondary: #D1D5DB;
+  }
+  
+  .light {
+    --bg-primary: #F9FAFB;
+    --bg-secondary: #F3F4F6;
+    --text-primary: #1F2937;
+    --text-secondary: #6B7280;
+  }
+}
+
+@layer components {
+  .message-user {
+    @apply bg-indigo-500 text-white rounded-l-xl rounded-tr-xl py-3 px-4 max-w-[80%] self-end;
+  }
+  
+  .message-ai {
+    @apply bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded-r-xl rounded-tl-xl py-3 px-4 max-w-[80%] self-start;
+  }
+  
+  .btn-primary {
+    @apply bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 px-4 rounded-lg transition duration-200;
+  }
+  
+  .btn-secondary {
+    @apply bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-medium py-2 px-4 rounded-lg transition duration-200;
+  }
+}

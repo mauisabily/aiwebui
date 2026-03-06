@@ -1,0 +1,20 @@
+server:
+  port: 8080
+  host: "localhost"
+
+mysql:
+  host: "localhost"
+  port: 3306
+  username: "ai_kpst"
+  password: "c61762a01f19d8"
+  database: "ai_kpst"
+  charset: "utf8mb4"
+
+ollama:
+  base_url: "http://192.168.1.50:11434"
+  default_model: "qwen3-coder:480b-cloud"
+
+rag:
+  chunk_size: 1000
+  chunk_overlap: 200
+  max_results: 5
