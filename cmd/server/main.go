@@ -33,10 +33,21 @@ func main() {
 	ragEngine := rag.NewEngine(cfg, db, ollamaClient)
 
 	// Create API handler
-	handler := handlers.NewHandler(db, ollamaClient)
+	handler := handlers.NewHandler(db, ollamaClient, ragEngine)
 
 	// Set up Gin router
 	router := gin.Default()
+
+	// Load templates
+	router.LoadHTMLGlob("web/templates/*.html")
+
+	// Serve static files
+	router.Static("/static", "./web/static")
+
+	// Root route - serve index.html
+	router.GET("/", func(c *gin.Context) {
+		c.HTML(http.StatusOK, "index.html", gin.H{})
+	})
 
 	// API routes
 	api := router.Group("/api/v1")
@@ -69,9 +80,17 @@ func main() {
 		api.GET("/knowledge-bases/:id/search", handler.SearchKnowledgeBase)
 		api.DELETE("/knowledge-bases/:id", handler.DeleteKnowledgeBase)
 		
-		// Settings endpoints
-		api.GET("/settings", handler.GetSettings)
-		api.PUT("/settings", handler.UpdateSettings)
+		// Settings endpoints (protected)
+		protected := api.Group("")
+		protected.Use(handlers.AuthMiddleware())
+		{
+			protected.GET("/settings", handler.GetSettings)
+			protected.PUT("/settings", handler.UpdateSettings)
+			protected.POST("/settings/test-connection", handler.TestConnection)
+		}
+
+		// Auth endpoints
+		api.POST("/login", handler.Login)
 		
 		// RAG endpoints
 		api.PUT("/conversations/:id/rag", handler.EnableRAG)

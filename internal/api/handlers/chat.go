@@ -1,30 +1,31 @@
 package handlers
 
 import (
+	"database/sql"
+	"fmt"
 	"net/http"
-	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
-	"aiwebui/internal/database/models"
 	"aiwebui/internal/ollama"
 )
 
 // ChatRequest represents a chat request
 type ChatRequest struct {
-	Model          string `json:"model" binding:"required"`
-	Message        string `json:"message" binding:"required"`
-	ConversationID int    `json:"conversation_id"`
-	ContextIDs     []int  `json:"context_ids"`
+    Model          string `json:"model"`
+    Message        string `json:"message" binding:"required"`
+    ConversationID int    `json:"conversation_id"`
+    ContextIDs     []int  `json:"context_ids"`
 }
 
 // ChatResponse represents a chat response
 type ChatResponse struct {
-	ID             int    `json:"id"`
-	ConversationID int    `json:"conversation_id"`
-	Role           string `json:"role"`
-	Content        string `json:"content"`
-	Timestamp      string `json:"timestamp"`
-	Model          string `json:"model"`
+    ID             int    `json:"id"`
+    ConversationID int    `json:"conversation_id"`
+    Role           string `json:"role"`
+    Content        string `json:"content"`
+    Timestamp      string `json:"timestamp"`
+    Model          string `json:"model"`
 }
 
 // SendMessage handles sending a chat message
@@ -41,214 +42,226 @@ func (h *Handler) SendMessage(c *gin.Context) {
 	// Get or create conversation
 	conversationID := req.ConversationID
 	if conversationID == 0 {
-		// Create new conversation
-		conversation := &models.Conversation{
-			UserID: 1, // Default user for now
-			Title:  "New Conversation",
+		res, err := h.DB.Exec("INSERT INTO conversations (title) VALUES (?)", "New Chat")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create conversation"})
+			return
 		}
-		// In a real implementation, we would save this to the database
-		// For now, we'll just use a dummy ID
-		conversationID = 1
+		newID, _ := res.LastInsertId()
+		conversationID = int(newID)
 	}
 
-	// Add user message to conversation
-	userMessage := &models.Message{
-		ConversationID: conversationID,
-		Role:           "user",
-		Content:        req.Message,
+	// Get current LLM settings
+	settings, _ := h.getLLMSettings()
+
+	// Get message history for context (messages already saved in DB - do NOT include current message yet)
+	var history []ollama.ChatMessage
+	rows, err := h.DB.Query("SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY timestamp ASC", conversationID)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var hMsg ollama.ChatMessage
+			if err := rows.Scan(&hMsg.Role, &hMsg.Content); err == nil {
+				history = append(history, hMsg)
+			}
+		}
 	}
-	// In a real implementation, we would save this to the database
+
+	// Append current user message to context (NOT saved to DB yet)
+	history = append(history, ollama.ChatMessage{
+		Role:    "user",
+		Content: req.Message,
+	})
+
+	// Determine model
+	model := req.Model
+	if model == "" {
+		model = settings.DefaultModel
+	}
+
+	// Determine URL
+	url := settings.OllamaURL
+	if settings.LLMMode == "airllm" {
+		url = settings.AirLLMURL
+	}
 
 	// Prepare chat request to Ollama
 	chatReq := &ollama.ChatRequest{
-		Model: req.Model,
-		Messages: []ollama.ChatMessage{
-			{
-				Role:    "user",
-				Content: req.Message,
-			},
-		},
+		Model:    model,
+		Messages: history,
+		Stream:   false,
 	}
 
-	// Send request to Ollama
-	response, err := h.Ollama.Chat(chatReq)
+	fmt.Printf("[Chat] Sending to Ollama (%s) conv=%d model=%s messages=%d\n", url, conversationID, model, len(history))
+
+	// === CALL AI FIRST ===
+	client := ollama.NewClient(url)
+	response, err := client.Chat(chatReq)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error: "Failed to generate response",
-			Code:  "GENERATION_ERROR",
+		errMsg := fmt.Sprintf("ERROR: Gagal sambung ke AI provider (%s). Sila semak Settings. Butiran: %v", url, err)
+		fmt.Printf("[Chat] %s\n", errMsg)
+		c.JSON(http.StatusOK, ChatResponse{
+			ConversationID: conversationID,
+			Role:           "assistant",
+			Content:        errMsg,
 		})
 		return
 	}
 
-	// Create response
-	chatResponse := ChatResponse{
-		ID:             1, // Dummy ID
+	assistantContent := response.Message.Content
+	fmt.Printf("[Chat] Got response from Ollama: model=%s done=%v content_len=%d\n", response.Model, response.Done, len(assistantContent))
+
+	if assistantContent == "" {
+		errMsg := "ERROR: AI membalas dengan mesej kosong. Sila cuba lagi atau tukar model."
+		fmt.Printf("[Chat] Empty response from model %s\n", model)
+		c.JSON(http.StatusOK, ChatResponse{
+			ConversationID: conversationID,
+			Role:           "assistant",
+			Content:        errMsg,
+		})
+		return
+	}
+
+	// === SAVE BOTH MESSAGES ONLY AFTER SUCCESSFUL AI RESPONSE ===
+	h.DB.Exec("INSERT INTO messages (conversation_id, role, content) VALUES (?, 'user', ?)", conversationID, req.Message)
+	h.DB.Exec("INSERT INTO messages (conversation_id, role, content) VALUES (?, 'assistant', ?)", conversationID, assistantContent)
+
+	// Update conversation title if still "New Chat"
+	if req.Message != "" {
+		title := req.Message
+		if len(title) > 50 {
+			title = title[:50]
+		}
+		h.DB.Exec("UPDATE conversations SET title = ? WHERE id = ? AND title = 'New Chat'", title, conversationID)
+	}
+
+	c.JSON(http.StatusOK, ChatResponse{
 		ConversationID: conversationID,
 		Role:           "assistant",
-		Content:        response.Message.Content,
+		Content:        assistantContent,
 		Timestamp:      response.CreatedAt,
 		Model:          response.Model,
-	}
-
-	// Add assistant message to conversation
-	assistantMessage := &models.Message{
-		ConversationID: conversationID,
-		Role:           "assistant",
-		Content:        response.Message.Content,
-	}
-	// In a real implementation, we would save this to the database
-
-	c.JSON(http.StatusOK, chatResponse)
+	})
 }
 
-// GetConversation retrieves a conversation by ID
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// GetConversation retrieves a conversation and its messages
 func (h *Handler) GetConversation(c *gin.Context) {
 	id := c.Param("id")
-	conversationID, err := strconv.Atoi(id)
+
+	// Get messages
+	rows, err := h.DB.Query("SELECT role, content, timestamp FROM messages WHERE conversation_id = ? ORDER BY timestamp ASC", id)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error: "Invalid conversation ID",
-			Code:  "INVALID_ID",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get messages"})
 		return
 	}
+	defer rows.Close()
 
-	// In a real implementation, we would retrieve the conversation from the database
-	// For now, we'll return a dummy response
-	conversation := struct {
-		ID        int             `json:"id"`
-		Title     string          `json:"title"`
-		CreatedAt string          `json:"created_at"`
-		UpdatedAt string          `json:"updated_at"`
-		Messages  []models.Message `json:"messages"`
-	}{
-		ID:        conversationID,
-		Title:     "Sample Conversation",
-		CreatedAt: "2026-03-06T12:00:00Z",
-		UpdatedAt: "2026-03-06T12:34:56Z",
-		Messages: []models.Message{
-			{
-				ID:             1,
-				ConversationID: conversationID,
-				Role:           "user",
-				Content:        "Hello, how are you?",
-				CreatedAt:      "2026-03-06T12:00:00Z",
-			},
-			{
-				ID:             2,
-				ConversationID: conversationID,
-				Role:           "assistant",
-				Content:        "I'm doing well, thank you for asking!",
-				CreatedAt:      "2026-03-06T12:00:30Z",
-			},
-		},
+	type MessageItem struct {
+		Role      string `json:"role"`
+		Content   string `json:"content"`
+		CreatedAt string `json:"created_at"`
 	}
 
-	c.JSON(http.StatusOK, conversation)
+	var messages []MessageItem
+	for rows.Next() {
+		var m MessageItem
+		var createdAt time.Time
+		if err := rows.Scan(&m.Role, &m.Content, &createdAt); err == nil {
+			m.CreatedAt = createdAt.Format(time.RFC3339) // Format time for JSON
+			messages = append(messages, m)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"id":       id,
+		"messages": messages,
+	})
 }
 
 // ListConversations lists all conversations
 func (h *Handler) ListConversations(c *gin.Context) {
-	// Parse query parameters
-	limit := c.DefaultQuery("limit", "20")
-	offset := c.DefaultQuery("offset", "0")
+	rows, err := h.DB.Query(`
+		SELECT c.id, c.title, c.created_at, c.updated_at, COUNT(m.id) as message_count
+		FROM conversations c
+		LEFT JOIN messages m ON c.id = m.conversation_id
+		GROUP BY c.id
+		ORDER BY c.updated_at DESC
+	`)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list conversations"})
+		return
+	}
+	defer rows.Close()
 
-	// In a real implementation, we would retrieve conversations from the database
-	// For now, we'll return a dummy response
-	conversations := struct {
-		Conversations []struct {
-			ID           int    `json:"id"`
-			Title        string `json:"title"`
-			CreatedAt    string `json:"created_at"`
-			UpdatedAt    string `json:"updated_at"`
-			MessageCount int    `json:"message_count"`
-		} `json:"conversations"`
-		Total  int `json:"total"`
-		Limit  int `json:"limit"`
-		Offset int `json:"offset"`
-	}{
-		Conversations: []struct {
-			ID           int    `json:"id"`
-			Title        string `json:"title"`
-			CreatedAt    string `json:"created_at"`
-			UpdatedAt    string `json:"updated_at"`
-			MessageCount int    `json:"message_count"`
-		}{
-			{
-				ID:           123,
-				Title:        "General Discussion",
-				CreatedAt:    "2026-03-06T12:00:00Z",
-				UpdatedAt:    "2026-03-06T12:34:56Z",
-				MessageCount: 15,
-			},
-			{
-				ID:           124,
-				Title:        "Technical Questions",
-				CreatedAt:    "2026-03-05T10:30:00Z",
-				UpdatedAt:    "2026-03-05T11:45:22Z",
-				MessageCount: 8,
-			},
-		},
-		Total:  42,
-		Limit:  20,
-		Offset: 0,
+	type ConversationItem struct {
+		ID           int    `json:"id"`
+		Title        string `json:"title"`
+		CreatedAt    string `json:"created_at"`
+		UpdatedAt    string `json:"updated_at"`
+		MessageCount int    `json:"message_count"`
 	}
 
-	lim, _ := strconv.Atoi(limit)
-	off, _ := strconv.Atoi(offset)
-	conversations.Limit = lim
-	conversations.Offset = off
+	var list []ConversationItem
+	for rows.Next() {
+		var item ConversationItem
+		var createdAt, updatedAt time.Time
+		var messageCount sql.NullInt64 // Use NullInt64 for COUNT which can be 0 (NULL if no messages)
+		if err := rows.Scan(&item.ID, &item.Title, &createdAt, &updatedAt, &messageCount); err == nil {
+			item.CreatedAt = createdAt.Format(time.RFC3339)
+			item.UpdatedAt = updatedAt.Format(time.RFC3339)
+			item.MessageCount = int(messageCount.Int64)
+			list = append(list, item)
+		}
+	}
 
-	c.JSON(http.StatusOK, conversations)
+	c.JSON(http.StatusOK, gin.H{
+		"conversations": list,
+		"total":         len(list),
+	})
 }
 
 // CreateConversation creates a new conversation
 func (h *Handler) CreateConversation(c *gin.Context) {
 	var req struct {
-		Title string `json:"title" binding:"required"`
+		Title string `json:"title"`
 	}
-
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error: "Invalid request format",
-			Code:  "INVALID_REQUEST",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
 
-	// In a real implementation, we would save the conversation to the database
-	// For now, we'll return a dummy response
-	conversation := struct {
-		ID        int    `json:"id"`
-		Title     string `json:"title"`
-		CreatedAt string `json:"created_at"`
-		UpdatedAt string `json:"updated_at"`
-	}{
-		ID:        125,
-		Title:     req.Title,
-		CreatedAt: "2026-03-06T12:45:00Z",
-		UpdatedAt: "2026-03-06T12:45:00Z",
+	// If title is empty, default to "New Chat"
+	if req.Title == "" {
+		req.Title = "New Chat"
 	}
 
-	c.JSON(http.StatusOK, conversation)
+	res, err := h.DB.Exec("INSERT INTO conversations (title) VALUES (?)", req.Title)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create conversation"})
+		return
+	}
+
+	id, _ := res.LastInsertId()
+	c.JSON(http.StatusOK, gin.H{
+		"id":    id,
+		"title": req.Title,
+	})
 }
 
 // DeleteConversation deletes a conversation by ID
 func (h *Handler) DeleteConversation(c *gin.Context) {
 	id := c.Param("id")
-	_, err := strconv.Atoi(id)
+	_, err := h.DB.Exec("DELETE FROM conversations WHERE id = ?", id)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error: "Invalid conversation ID",
-			Code:  "INVALID_ID",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete conversation"})
 		return
 	}
-
-	// In a real implementation, we would delete the conversation from the database
-	// For now, we'll return a success response
-	c.JSON(http.StatusOK, SuccessResponse{
-		Success: true,
-		Message: "Conversation deleted successfully",
-	})
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }

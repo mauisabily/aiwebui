@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"aiwebui/internal/ollama"
 )
 
 // ListModels lists all available models

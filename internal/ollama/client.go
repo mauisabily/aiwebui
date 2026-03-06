@@ -19,7 +19,7 @@ type Client struct {
 func NewClient(baseURL string) *Client {
 	return &Client{
 		baseURL:    baseURL,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: &http.Client{Timeout: 120 * time.Second},
 	}
 }
 
@@ -88,6 +88,7 @@ func (c *Client) Chat(req *ChatRequest) (*ChatResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %v", err)
 	}
+	fmt.Printf("Ollama Chat Request Raw: %s\n", string(body))
 
 	httpReq, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
 	if err != nil {
@@ -105,6 +106,12 @@ func (c *Client) Chat(req *ChatRequest) (*ChatResponse, error) {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("failed to chat: %s - %s", resp.Status, string(body))
 	}
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	fmt.Printf("Ollama Chat Response Raw: %s\n", string(bodyBytes))
+	
+	// Restore body for decoder
+	resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
 	var result ChatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {

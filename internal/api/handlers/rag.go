@@ -5,6 +5,8 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"aiwebui/internal/rag"
+	"aiwebui/internal/ollama"
 )
 
 // RAGStatus represents the RAG status for a conversation
@@ -114,41 +116,73 @@ func (h *Handler) SendRAGMessage(c *gin.Context) {
 	// Add user message to conversation
 	// In a real implementation, we would save this to the database
 
-	// If RAG is enabled, retrieve relevant context
-	var context string
-	if req.EnableRAG {
-		// In a real implementation, we would search knowledge bases and retrieve relevant documents
-		// For now, we'll use a dummy context
-		context = "Based on the documentation, quantum computing is a type of computation that harnesses the principles of quantum mechanics."
-	}
-
-	// Prepare enhanced prompt with context
+	// Get current LLM settings
+	settings, _ := h.getLLMSettings()
+	
+	// If RAG is enabled, retrieve relevant context and enhance prompt
+	var contextResults []rag.SearchResult
 	enhancedPrompt := req.Message
-	if context != "" {
-		enhancedPrompt = "Context: " + context + "\n\nQuestion: " + req.Message
+	if req.EnableRAG {
+		var err error
+		enhancedPrompt, contextResults, err = h.RAG.ProcessQuery(req.Message, 1) // Using dummy knowledgeBaseID 1
+		if err != nil {
+			c.JSON(http.StatusOK, RAGChatResponse{
+				Role:    "assistant",
+				Content: "ERROR: Failed to process RAG query. Details: " + err.Error(),
+			})
+			return
+		}
 	}
 
-	// Prepare chat request to Ollama
-	// In a real implementation, we would use the ollama client to send the request
-	// For now, we'll return a dummy response
+	// Prepare chat request
+	chatReq := &ollama.ChatRequest{
+		Model: req.Model,
+		Messages: []ollama.ChatMessage{
+			{Role: "user", Content: enhancedPrompt},
+		},
+	}
+	if req.Model == "" {
+		chatReq.Model = settings.DefaultModel
+	}
+
+	url := settings.OllamaURL
+	if settings.LLMMode == "airllm" {
+		url = settings.AirLLMURL
+	}
+
+	// Send request to configured provider
+	client := ollama.NewClient(url)
+	ollamaRes, err := client.Chat(chatReq)
+	if err != nil {
+		c.JSON(http.StatusOK, RAGChatResponse{
+			Role:    "assistant",
+			Content: "ERROR: Failed to connect to AI provider at " + url + ". Please check your settings. Details: " + err.Error(),
+		})
+		return
+	}
+
+	resContent := ollamaRes.Message.Content
+	resTimestamp := ollamaRes.CreatedAt
 
 	response := RAGChatResponse{
 		ID:             12345,
 		ConversationID: conversationID,
 		Role:           "assistant",
-		Content:        "Based on the information I have about quantum computing...",
-		Sources: []struct {
+		Content:        resContent,
+		Timestamp:      resTimestamp,
+	}
+
+	// Map RAG results to response sources
+	for _, res := range contextResults {
+		response.Sources = append(response.Sources, struct {
 			DocumentID     int     `json:"document_id"`
 			DocumentTitle  string  `json:"document_title"`
 			RelevanceScore float64 `json:"relevance_score"`
 		}{
-			{
-				DocumentID:     456,
-				DocumentTitle:  "Introduction to Quantum Mechanics",
-				RelevanceScore: 0.92,
-			},
-		},
-		Timestamp: "2026-03-06T12:34:56Z",
+			DocumentID:     res.DocumentID,
+			DocumentTitle:  res.DocumentTitle,
+			RelevanceScore: res.RelevanceScore,
+		})
 	}
 
 	// Add assistant message to conversation

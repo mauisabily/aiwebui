@@ -2,7 +2,7 @@ package rag
 
 import (
 	"aiwebui/internal/database"
-	"aiwebui/internal/database/models"
+	// "aiwebui/internal/database/models"
 	"aiwebui/internal/ollama"
 )
 
@@ -47,7 +47,7 @@ func (s *Searcher) KeywordSearch(query string, knowledgeBaseID int, limit int) (
 // VectorSearch performs vector similarity search
 func (s *Searcher) VectorSearch(query string, knowledgeBaseID int, limit int) ([]SearchResult, error) {
 	// Generate embedding for the query
-	queryEmbedding, err := s.embeddingGenerator.GenerateEmbedding(query)
+	_, err := s.embeddingGenerator.GenerateEmbedding(query)
 	if err != nil {
 		return nil, err
 	}

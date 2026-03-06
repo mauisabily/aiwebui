@@ -4,7 +4,7 @@ package ollama
 type GenerateRequest struct {
 	Model   string                 `json:"model"`
 	Prompt  string                 `json:"prompt"`
-	Stream  bool                   `json:"stream,omitempty"`
+	Stream  bool                   `json:"stream"`
 	Context []int                  `json:"context,omitempty"`
 	Options map[string]interface{} `json:"options,omitempty"`
 }
@@ -34,7 +34,7 @@ type ChatMessage struct {
 type ChatRequest struct {
 	Model    string                 `json:"model"`
 	Messages []ChatMessage          `json:"messages"`
-	Stream   bool                   `json:"stream,omitempty"`
+	Stream   bool                   `json:"stream"`
 	Options  map[string]interface{} `json:"options,omitempty"`
 }
 
